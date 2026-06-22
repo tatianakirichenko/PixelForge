@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+# paint.py - Простейший графический редактор на Python (Tkinter)
+"""
+Поддерживает: рисование кистью, выбор цвета, толщину, фигуры, undo/redo, сохранение PNG.
+"""
+import tkinter as tk
+from tkinter import colorchooser, filedialog, ttk
+from PIL import Image, ImageDraw, ImageTk
+import io
+import os
+
+class PaintApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("🎨 PixelForge - Python")
+        self.root.geometry("900x700")
+        self.root.resizable(True, True)
+
+        # Переменные состояния
+        self.last_x = None
+        self.last_y = None
+        self.color = "#000000"
+        self.bg_color = "#ffffff"
+        self.brush_size = 5
+        self.tool = "brush"  # brush, eraser, rect, ellipse, line
+        self.undo_stack = []
+        self.redo_stack = []
+        self.max_undo = 20
+
+        # Создаём холст
+        self.canvas = tk.Canvas(self.root, bg=self.bg_color, cursor="cross")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<B1-Motion>", self.paint)
+        self.canvas.bind("<ButtonRelease-1>", self.reset)
+        self.canvas.bind("<Button-1>", self.start_draw)
+
+        # Панель инструментов
+        self.create_toolbar()
+
+        # Изображение для сохранения
+        self.image = Image.new("RGB", (800, 600), self.bg_color)
+        self.draw = ImageDraw.Draw(self.image)
+
+        self.bind_keys()
+
+    def create_toolbar(self):
+        toolbar = tk.Frame(self.root, bg="#f0f0f0", relief=tk.RAISED, bd=2)
+        toolbar.pack(side=tk.TOP, fill=tk.X)
+
+        # Кнопки инструментов
+        tools = [
+            ("🖌️ Кисть", "brush"),
+            ("🧽 Ластик", "eraser"),
+            ("▭ Прямоугольник", "rect"),
+            ("⬤ Эллипс", "ellipse"),
+            ("╱ Линия", "line"),
+        ]
+        for text, tool in tools:
+            btn = tk.Button(toolbar, text=text, command=lambda t=tool: self.set_tool(t),
+                            relief=tk.RAISED, padx=5)
+            btn.pack(side=tk.LEFT, padx=2, pady=2)
+
+        # Цвет
+        tk.Label(toolbar, text="Цвет:").pack(side=tk.LEFT, padx=(10,0))
+        self.color_btn = tk.Button(toolbar, bg=self.color, width=2, command=self.choose_color)
+        self.color_btn.pack(side=tk.LEFT, padx=2)
+
+        # Толщина
+        tk.Label(toolbar, text="Толщина:").pack(side=tk.LEFT, padx=(10,0))
+        self.size_var = tk.IntVar(value=5)
+        tk.Scale(toolbar, from_=1, to=20, orient=tk.HORIZONTAL, variable=self.size_var,
+                 length=100, showvalue=0).pack(side=tk.LEFT)
+
+        # Кнопки действий
+        tk.Button(toolbar, text="↩️ Отменить", command=self.undo).pack(side=tk.LEFT, padx=5)
+        tk.Button(toolbar, text="↪️ Повторить", command=self.redo).pack(side=tk.LEFT, padx=5)
+        tk.Button(toolbar, text="🗑️ Очистить", command=self.clear_canvas).pack(side=tk.LEFT, padx=5)
+        tk.Button(toolbar, text="💾 Сохранить", command=self.save_image).pack(side=tk.LEFT, padx=5)
+
+    def set_tool(self, tool):
+        self.tool = tool
+
+    def choose_color(self):
+        color = colorchooser.askcolor(color=self.color)[1]
+        if color:
+            self.color = color
+            self.color_btn.config(bg=color)
+
+    def start_draw(self, event):
+        self.last_x = event.x
+        self.last_y = event.y
+        # Для фигур сохраняем начальную точку
+        self.start_x = event.x
+        self.start_y = event.y
+        # Создаём временный объект для фигур
+        if self.tool in ("rect", "ellipse", "line"):
+            self.temp_item = None
+
+    def paint(self, event):
+        x, y = event.x, event.y
+        size = self.size_var.get()
+        color = self.bg_color if self.tool == "eraser" else self.color
+
+        if self.tool == "brush":
+            # Рисуем линию
+            self.canvas.create_line(self.last_x, self.last_y, x, y,
+                                    width=size, fill=color,
+                                    capstyle=tk.ROUND, smooth=True)
+            self.draw.line([self.last_x, self.last_y, x, y], fill=color, width=size)
+            self.last_x, self.last_y = x, y
+        elif self.tool in ("rect", "ellipse", "line"):
+            # Удаляем предыдущий временный объект
+            if hasattr(self, 'temp_item') and self.temp_item:
+                self.canvas.delete(self.temp_item)
+            # Рисуем новую фигуру
+            if self.tool == "rect":
+                item = self.canvas.create_rectangle(self.start_x, self.start_y, x, y,
+                                                    outline=color, width=size)
+            elif self.tool == "ellipse":
+                item = self.canvas.create_oval(self.start_x, self.start_y, x, y,
+                                               outline=color, width=size)
+            elif self.tool == "line":
+                item = self.canvas.create_line(self.start_x, self.start_y, x, y,
+                                               fill=color, width=size)
+            self.temp_item = item
+
+    def reset(self, event):
+        if self.tool in ("rect", "ellipse", "line") and hasattr(self, 'temp_item') and self.temp_item:
+            # Сохраняем фигуру в изображение
+            # Получаем координаты из объекта
+            coords = self.canvas.coords(self.temp_item)
+            if self.tool == "rect":
+                self.draw.rectangle(coords, outline=self.color, width=self.size_var.get())
+            elif self.tool == "ellipse":
+                self.draw.ellipse(coords, outline=self.color, width=self.size_var.get())
+            elif self.tool == "line":
+                self.draw.line(coords, fill=self.color, width=self.size_var.get())
+            # Добавляем в историю
+            self.push_undo()
+            self.temp_item = None
+        self.last_x = None
+        self.last_y = None
+
+    def push_undo(self):
+        # Сохраняем текущее состояние как PNG в память
+        with io.BytesIO() as output:
+            self.image.save(output, format="PNG")
+            data = output.getvalue()
+        self.undo_stack.append(data)
+        if len(self.undo_stack) > self.max_undo:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+
+    def undo(self):
+        if not self.undo_stack:
+            return
+        # Сохраняем текущее состояние в redo
+        with io.BytesIO() as output:
+            self.image.save(output, format="PNG")
+            data = output.getvalue()
+        self.redo_stack.append(data)
+        # Восстанавливаем из undo
+        prev = self.undo_stack.pop()
+        self.load_image_data(prev)
+        self.update_canvas()
+
+    def redo(self):
+        if not self.redo_stack:
+            return
+        # Сохраняем текущее в undo
+        with io.BytesIO() as output:
+            self.image.save(output, format="PNG")
+            data = output.getvalue()
+        self.undo_stack.append(data)
+        # Восстанавливаем из redo
+        next_data = self.redo_stack.pop()
+        self.load_image_data(next_data)
+        self.update_canvas()
+
+    def load_image_data(self, data):
+        img = Image.open(io.BytesIO(data))
+        self.image = img
+        self.draw = ImageDraw.Draw(self.image)
+
+    def update_canvas(self):
+        self.canvas.delete("all")
+        # Перерисовываем холст из изображения
+        # Для простоты используем PhotoImage
+        img = self.image.resize((self.canvas.winfo_width(), self.canvas.winfo_height()), Image.Resampling.LANCZOS)
+        self.tk_img = ImageTk.PhotoImage(img)
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_img)
+
+    def clear_canvas(self):
+        self.canvas.delete("all")
+        self.image = Image.new("RGB", (800, 600), self.bg_color)
+        self.draw = ImageDraw.Draw(self.image)
+        self.push_undo()
+
+    def save_image(self):
+        filepath = filedialog.asksaveasfilename(defaultextension=".png",
+                                                filetypes=[("PNG", "*.png"), ("All", "*.*")])
+        if filepath:
+            # Обновляем изображение с холста
+            # Сначала сохраняем всё что нарисовано на холсте
+            # В нашей модели мы рисуем и на холсте и на Image, но для фигур мы рисуем на Image при release.
+            # Чтобы сохранить всё, можно обновить изображение из холста, но проще использовать текущий self.image
+            self.image.save(filepath, "PNG")
+
+    def bind_keys(self):
+        self.root.bind("<Control-z>", lambda e: self.undo())
+        self.root.bind("<Control-y>", lambda e: self.redo())
+        self.root.bind("<Control-s>", lambda e: self.save_image())
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = PaintApp(root)
+    root.mainloop()
